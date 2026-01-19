@@ -386,7 +386,22 @@ class ForcedAlignmentBinarizer:
     show_default=True,
     help="binarize config path",
 )
-def binarize(config_path: str):
+@click.option(
+    "--split_diphthong",
+    is_flag=True,
+    default=False,
+    show_default=True,
+    help="Enable diphthong splitting mode. Links compound vowels with their split "
+         "component vowels for mutual learning during training.",
+)
+@click.option(
+    "--split_dict",
+    type=str,
+    default="dictionary/vowel_split_example.txt",
+    show_default=True,
+    help="Path to the diphthong split rules dictionary (only used with --split_diphthong).",
+)
+def binarize(config_path: str, split_diphthong: bool, split_dict: str):
     with open(config_path, "r") as f:
         config = yaml.safe_load(f)
 
@@ -394,7 +409,16 @@ def binarize(config_path: str):
         "max_length": config["max_length"],
         "melspec_config": config["melspec_config"],
         "data_augmentation_size": config["data_augmentation"]["size"],
+        "split_diphthong": split_diphthong,
     }
+    
+    # If split_diphthong is enabled, load and save the split rules
+    if split_diphthong:
+        from modules.utils.diphthong_split import load_split_rules
+        split_rules = load_split_rules(split_dict)
+        global_config["split_rules"] = split_rules
+        print(f"Diphthong splitting enabled with {len(split_rules)} rules from {split_dict}")
+    
     with open(pathlib.Path("data/binary/") / "global_config.yaml", "w") as file:
         yaml.dump(global_config, file)
 
