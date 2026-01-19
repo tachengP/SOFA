@@ -1,0 +1,43 @@
+# Binarize config for compound vowel split training
+# 
+# This configuration is used to prepare data for training a split model.
+# The split model learns to identify split points within compound vowels.
+#
+# To use this config:
+# 1. Prepare your training data with split phoneme annotations
+#    (e.g., 'ai' should be annotated as 'a i' in transcriptions.csv)
+# 2. Run: python binarize.py -c configs/split_binarize_config.yaml
+# 3. Then train with: python train.py -c configs/split_train_config.yaml
+
+melspec_config:
+  n_mels: 128
+  sample_rate: 44100
+  win_length: 1024
+  hop_length: 512
+  n_fft: 2048
+  fmin: 40
+  fmax: 16000
+  clamp: 0.00001
+  scale_factor: 4
+
+data_folder: data/
+valid_set_size: 15
+valid_set_preferred_folders:
+  - test
+ignored_phonemes:
+  - AP
+  - SP
+  - <AP>
+  - <SP>
+  - ''
+  - pau
+  - cl
+data_augmentation:
+  size: 2
+  key_shift_choices: [ 1, 2, 3, 4, 5, 6,-1,-2,-3,-4,-5,-6 ]
+
+max_length: 45 # unit: second
+
+# Split-specific settings
+# When preparing split training data, ensure your transcriptions.csv
+# contains the split phoneme sequences (e.g., 'a i' instead of 'ai')

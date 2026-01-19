@@ -70,6 +70,13 @@ from train import LitForcedAlignmentTask
     type=str,
     help="(only used when --g2p=='Dictionary') path to the dictionary",
 )
+@click.option(
+    "--split_dictionary",
+    "-sd",
+    default=None,
+    type=str,
+    help="(only used when --g2p=='Split') path to the split rules dictionary for compound vowel splitting",
+)
 def main(
         ckpt,
         folder,

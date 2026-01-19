@@ -82,6 +82,8 @@ On singing data, SOFA has the following advantages over MFA (Montreal Forced Ali
    - Using a custom g2p instead of a dictionary
      - See [g2p module instructions](modules/g2p/readme_g2p.md)
    - In the matching mode, you can activate it by specifying `-m` during inference. It finds the most probable contiguous sequence segment within the given phoneme sequence, rather than having to use all the phonemes.
+   - **Compound Vowel Splitting**: Train a model to split compound vowels (diphthongs) into their component simple vowels
+     - See [split guide](docs/split_guide.md) for detailed instructions
 
 ## ONNX Inference
 
