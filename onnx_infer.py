@@ -242,6 +242,47 @@ def decode(ph_seq_id, ph_prob_log, edge_prob):
     type=str,
     help="(only used when --g2p=='Dictionary') path to the dictionary",
 )
+@click.option(
+    "--split_all_diphthong",
+    is_flag=True,
+    default=False,
+    show_default=True,
+    help="Split all compound vowels (diphthongs) into their component vowels during inference.",
+)
+@click.option(
+    "--split_diphthong_rate",
+    type=float,
+    default=None,
+    help="Probability (0.0-1.0) of splitting each individual diphthong instance.",
+)
+@click.option(
+    "--split_dict",
+    type=str,
+    default="dictionary/vowel_split_example.txt",
+    show_default=True,
+    help="Path to the diphthong split rules dictionary.",
+)
+@click.option(
+    "--modify_type",
+    type=click.Choice(["tg", "csv"]),
+    default=None,
+    help="Modify existing annotation files instead of running inference. "
+         "'tg' for TextGrid, 'csv' for transcriptions.csv.",
+)
+@click.option(
+    "--combine_all_diphthong",
+    is_flag=True,
+    default=False,
+    show_default=True,
+    help="When modifying annotations, combine all split vowel sequences back into compound vowels.",
+)
+@click.option(
+    "--batch_subfolders",
+    is_flag=True,
+    default=False,
+    show_default=True,
+    help="Process each subdirectory of the input folder as a separate batch.",
+)
 def infer(onnx,
           folder,
           g2p,
@@ -249,111 +290,211 @@ def infer(onnx,
           in_format,
           out_formats,
           save_confidence,
+          split_all_diphthong,
+          split_diphthong_rate,
+          split_dict,
+          modify_type,
+          combine_all_diphthong,
+          batch_subfolders,
           **kwargs, ):
+    folder_path = pathlib.Path(folder)
+    
+    # Handle annotation modification mode (modifying existing files)
+    if modify_type is not None:
+        from modules.utils.diphthong_split import load_split_rules
+        from modules.utils.annotation_modifier import process_folder_annotations
+        
+        split_rules = load_split_rules(split_dict)
+        if not split_rules:
+            raise ValueError(f"No split rules loaded from {split_dict}")
+        
+        # Determine the modification mode
+        if combine_all_diphthong:
+            mod_mode = "combine_all"
+            print(f"Combining all split vowels back into compound vowels...")
+        elif split_all_diphthong:
+            mod_mode = "split_all"
+            print(f"Splitting all compound vowels...")
+        elif split_diphthong_rate is not None:
+            if not 0.0 <= split_diphthong_rate <= 1.0:
+                raise ValueError("--split_diphthong_rate must be between 0.0 and 1.0")
+            mod_mode = "split_rate"
+            print(f"Splitting {split_diphthong_rate*100:.1f}% of compound vowels...")
+        else:
+            raise ValueError("When using --modify_type, you must also specify --combine_all_diphthong, "
+                           "--split_all_diphthong, or --split_diphthong_rate")
+        
+        # Process folders
+        if batch_subfolders:
+            subfolders = [f for f in folder_path.iterdir() if f.is_dir()]
+            print(f"Batch processing {len(subfolders)} subdirectories...")
+            for subfolder in subfolders:
+                print(f"\nProcessing: {subfolder}")
+                process_folder_annotations(
+                    subfolder, modify_type, split_rules, mod_mode,
+                    split_diphthong_rate or 1.0, recursive=True
+                )
+        else:
+            process_folder_annotations(
+                folder_path, modify_type, split_rules, mod_mode,
+                split_diphthong_rate or 1.0, recursive=True
+            )
+        
+        print("\nAnnotation modification complete.")
+        return
+    
+    # Standard ONNX inference mode
     config_file = pathlib.Path(onnx).with_name('config.yaml')
     assert os.path.exists(onnx), f"Onnx file does not exist: {onnx}"
     assert config_file.exists(), f"Config file does not exist: {config_file}"
 
     config = load_config_from_yaml(config_file)
     melspec_config = config['melspec_config']
-    session = create_session(onnx)
-
-    if not g2p.endswith("G2P"):
-        g2p += "G2P"
-    g2p_class = getattr(modules.g2p, g2p)
-    grapheme_to_phoneme = g2p_class(**kwargs)
-    out_formats = [i.strip().lower() for i in out_formats.split(",")]
-
-    if not ap_detector.endswith("APDetector"):
-        ap_detector += "APDetector"
-    AP_detector_class = getattr(modules.AP_detector, ap_detector)
-    get_AP = AP_detector_class(**kwargs)
-
-    grapheme_to_phoneme.set_in_format(in_format)
-    dataset = grapheme_to_phoneme.get_dataset(pathlib.Path(folder).rglob("*.wav"))
-    predictions = []
-
-    for i in tqdm(range(len(dataset)), desc="Processing", unit="sample"):
-        wav_path, ph_seq, word_seq, ph_idx_to_word_idx = dataset[i]
-
-        waveform, sr = torchaudio.load(wav_path)
-        waveform = waveform[0][None, :][0]
-        if sr != melspec_config['sample_rate']:
-            waveform = torchaudio.transforms.Resample(sr, melspec_config['sample_rate'])(waveform)
-
-        wav_length = waveform.shape[0] / melspec_config["sample_rate"]
-        ph_seq_id = np.array([config['vocab'][ph] for ph in ph_seq], dtype=np.int64)
-        num_frames = int(
-            (wav_length * melspec_config["scale_factor"] * melspec_config["sample_rate"] + 0.5) / melspec_config[
-                "hop_length"]
-        )
-        results = run_inference(session, [waveform.numpy()], num_frames, [ph_seq_id])
-
-        edge_diff = results['edge_diff']
-        edge_prob = results['edge_prob']
-        ph_prob_log = results['ph_prob_log']
-        # ctc_logits = results['ctc_logits']
-        T = results['T']
-
-        ph_idx_seq, ph_time_int_pred, frame_confidence = decode(ph_seq_id, ph_prob_log, edge_prob, )
-        total_confidence = np.exp(np.mean(np.log(frame_confidence + 1e-6)) / 3)
-
-        # postprocess
-        frame_length = melspec_config["hop_length"] / (
-                melspec_config["sample_rate"] * melspec_config["scale_factor"]
-        )
-        ph_time_fractional = (edge_diff[ph_time_int_pred] / 2).clip(-0.5, 0.5)
-        ph_time_pred = frame_length * (
-            np.concatenate(
-                [
-                    ph_time_int_pred.astype("float32") + ph_time_fractional,
-                    [T],
-                ]
-            )
-        )
-        ph_intervals = np.stack([ph_time_pred[:-1], ph_time_pred[1:]], axis=1)
-
-        ph_seq_pred = []
-        ph_intervals_pred = []
-        word_seq_pred = []
-        word_intervals_pred = []
-
-        word_idx_last = -1
-        for j, ph_idx in enumerate(ph_idx_seq):
-            # ph_idx只能用于两种情况：ph_seq和ph_idx_to_word_idx
-            if ph_seq[ph_idx] == "SP":
-                continue
-            ph_seq_pred.append(ph_seq[ph_idx])
-            ph_intervals_pred.append(ph_intervals[j, :])
-
-            word_idx = ph_idx_to_word_idx[ph_idx]
-            if word_idx == word_idx_last:
-                word_intervals_pred[-1][1] = ph_intervals[j, 1]
+    
+    # Load split rules if diphthong splitting is enabled
+    split_rules = None
+    if split_all_diphthong or split_diphthong_rate is not None:
+        from modules.utils.diphthong_split import load_split_rules
+        split_rules = load_split_rules(split_dict)
+        if split_rules:
+            if split_all_diphthong:
+                print(f"Diphthong splitting: all qualifying diphthongs will be split ({len(split_rules)} rules)")
             else:
-                word_seq_pred.append(word_seq[word_idx])
-                word_intervals_pred.append([ph_intervals[j, 0], ph_intervals[j, 1]])
-                word_idx_last = word_idx
-        ph_seq_pred = np.array(ph_seq_pred)
-        ph_intervals_pred = np.array(ph_intervals_pred).clip(min=0, max=None)
-        word_seq_pred = np.array(word_seq_pred)
-        word_intervals_pred = np.array(word_intervals_pred).clip(min=0, max=None)
+                print(f"Diphthong splitting: {split_diphthong_rate*100:.1f}% of qualifying diphthongs will be split")
+        else:
+            print(f"Warning: No split rules loaded from {split_dict}")
+    
+    def run_onnx_inference_on_folder(target_folder):
+        session = create_session(onnx)
+        
+        if not g2p.endswith("G2P"):
+            g2p_name = g2p + "G2P"
+        else:
+            g2p_name = g2p
+        g2p_class = getattr(modules.g2p, g2p_name)
+        grapheme_to_phoneme = g2p_class(**kwargs)
+        out_format_list = [i.strip().lower() for i in out_formats.split(",")]
 
-        predictions.append((wav_path,
-                            wav_length,
-                            total_confidence,
-                            ph_seq_pred,
-                            ph_intervals_pred,
-                            word_seq_pred,
-                            word_intervals_pred))
+        if not ap_detector.endswith("APDetector"):
+            ap_name = ap_detector + "APDetector"
+        else:
+            ap_name = ap_detector
+        AP_detector_class = getattr(modules.AP_detector, ap_name)
+        get_AP = AP_detector_class(**kwargs)
 
-    predictions = get_AP.process(predictions)
-    predictions, log = post_processing(predictions)
-    exporter = Exporter(predictions, log)
+        grapheme_to_phoneme.set_in_format(in_format)
+        dataset = grapheme_to_phoneme.get_dataset(pathlib.Path(target_folder).rglob("*.wav"))
+        predictions = []
 
-    if save_confidence:
-        out_formats.append('confidence')
+        for i in tqdm(range(len(dataset)), desc="Processing", unit="sample"):
+            wav_path, ph_seq, word_seq, ph_idx_to_word_idx = dataset[i]
 
-    exporter.export(out_formats)
+            waveform, sr = torchaudio.load(wav_path)
+            waveform = waveform[0][None, :][0]
+            if sr != melspec_config['sample_rate']:
+                waveform = torchaudio.transforms.Resample(sr, melspec_config['sample_rate'])(waveform)
+
+            wav_length = waveform.shape[0] / melspec_config["sample_rate"]
+            ph_seq_id = np.array([config['vocab'][ph] for ph in ph_seq], dtype=np.int64)
+            num_frames = int(
+                (wav_length * melspec_config["scale_factor"] * melspec_config["sample_rate"] + 0.5) / melspec_config[
+                    "hop_length"]
+            )
+            results = run_inference(session, [waveform.numpy()], num_frames, [ph_seq_id])
+
+            edge_diff = results['edge_diff']
+            edge_prob = results['edge_prob']
+            ph_prob_log = results['ph_prob_log']
+            T = results['T']
+
+            ph_idx_seq, ph_time_int_pred, frame_confidence = decode(ph_seq_id, ph_prob_log, edge_prob, )
+            total_confidence = np.exp(np.mean(np.log(frame_confidence + 1e-6)) / 3)
+
+            # postprocess
+            frame_length = melspec_config["hop_length"] / (
+                    melspec_config["sample_rate"] * melspec_config["scale_factor"]
+            )
+            ph_time_fractional = (edge_diff[ph_time_int_pred] / 2).clip(-0.5, 0.5)
+            ph_time_pred = frame_length * (
+                np.concatenate(
+                    [
+                        ph_time_int_pred.astype("float32") + ph_time_fractional,
+                        [T],
+                    ]
+                )
+            )
+            ph_intervals = np.stack([ph_time_pred[:-1], ph_time_pred[1:]], axis=1)
+
+            ph_seq_pred = []
+            ph_intervals_pred = []
+            word_seq_pred = []
+            word_intervals_pred = []
+
+            word_idx_last = -1
+            for j, ph_idx in enumerate(ph_idx_seq):
+                if ph_seq[ph_idx] == "SP":
+                    continue
+                ph_seq_pred.append(ph_seq[ph_idx])
+                ph_intervals_pred.append(ph_intervals[j, :])
+
+                word_idx = ph_idx_to_word_idx[ph_idx]
+                if word_idx == word_idx_last:
+                    word_intervals_pred[-1][1] = ph_intervals[j, 1]
+                else:
+                    word_seq_pred.append(word_seq[word_idx])
+                    word_intervals_pred.append([ph_intervals[j, 0], ph_intervals[j, 1]])
+                    word_idx_last = word_idx
+            
+            ph_seq_pred = list(ph_seq_pred)
+            ph_intervals_pred = [list(interval) for interval in ph_intervals_pred]
+            
+            # Apply diphthong splitting if enabled
+            if split_rules and (split_all_diphthong or split_diphthong_rate is not None):
+                from modules.utils.diphthong_split import apply_split_to_annotations
+                
+                if split_all_diphthong:
+                    ph_seq_pred, ph_intervals_pred = apply_split_to_annotations(
+                        ph_seq_pred, [(s, e) for s, e in ph_intervals_pred], 
+                        split_rules, "all"
+                    )
+                elif split_diphthong_rate is not None:
+                    ph_seq_pred, ph_intervals_pred = apply_split_to_annotations(
+                        ph_seq_pred, [(s, e) for s, e in ph_intervals_pred],
+                        split_rules, "rate", split_diphthong_rate
+                    )
+            
+            ph_seq_pred = np.array(ph_seq_pred)
+            ph_intervals_pred = np.array(ph_intervals_pred).clip(min=0, max=None)
+            word_seq_pred = np.array(word_seq_pred)
+            word_intervals_pred = np.array(word_intervals_pred).clip(min=0, max=None)
+
+            predictions.append((wav_path,
+                                wav_length,
+                                total_confidence,
+                                ph_seq_pred,
+                                ph_intervals_pred,
+                                word_seq_pred,
+                                word_intervals_pred))
+
+        predictions = get_AP.process(predictions)
+        predictions, log = post_processing(predictions)
+        exporter = Exporter(predictions, log)
+
+        if save_confidence:
+            out_format_list.append('confidence')
+
+        exporter.export(out_format_list)
+    
+    if batch_subfolders:
+        subfolders = [f for f in folder_path.iterdir() if f.is_dir()]
+        print(f"Batch processing {len(subfolders)} subdirectories...")
+        for subfolder in subfolders:
+            print(f"\nProcessing: {subfolder}")
+            run_onnx_inference_on_folder(subfolder)
+    else:
+        run_onnx_inference_on_folder(folder_path)
+    
+    print("Output files are saved to the same folder as the input wav files.")
 
 
 if __name__ == '__main__':
