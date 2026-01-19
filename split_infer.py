@@ -9,16 +9,13 @@ Usage:
 """
 
 import pathlib
-from typing import Dict, List, Tuple
 
 import click
 import lightning as pl
-import numpy as np
 import torch
 
 import modules.AP_detector
 import modules.g2p
-from modules.g2p.split_g2p import SplitG2P
 from modules.utils.export_tool import Exporter
 from modules.utils.post_processing import post_processing
 from train import LitForcedAlignmentTask
@@ -30,30 +27,6 @@ class SplitExporter(Exporter):
     def __init__(self, predictions, log, split_info=None):
         super().__init__(predictions, log)
         self.split_info = split_info or {}
-
-
-def find_split_points(
-    ph_intervals: np.ndarray,
-    ph_seq: List[str],
-    split_rules: Dict[str, List[str]],
-    original_ph_seq: List[str],
-) -> Tuple[List[str], np.ndarray]:
-    """
-    Use the aligned intervals to determine split points for compound vowels.
-    
-    Since the model was trained with split phonemes, the alignment already
-    contains the split points. This function reconstructs the mapping.
-    
-    Args:
-        ph_intervals: Array of (start, end) times for each phoneme
-        ph_seq: List of phonemes (already split)
-        split_rules: Dictionary mapping compound vowels to components
-        original_ph_seq: Original phoneme sequence before splitting
-        
-    Returns:
-        Tuple of (ph_seq, ph_intervals) with split information
-    """
-    return ph_seq, ph_intervals
 
 
 @click.command()
@@ -140,7 +113,8 @@ def main(
     in_format,
     out_formats,
     save_confidence,
-    **kwargs,
+    dictionary,
+    split_dictionary,
 ):
     """
     Perform split inference on audio files.
@@ -148,8 +122,14 @@ def main(
     This script uses a forced alignment model trained with split phonemes
     to split compound vowels in the input audio into their component vowels.
     """
+    # Create kwargs dict for G2P initialization
+    kwargs = {
+        "dictionary": dictionary,
+        "split_dictionary": split_dictionary,
+    }
+    
     # Ensure split_dictionary is provided
-    if kwargs.get("split_dictionary") is None:
+    if split_dictionary is None:
         raise ValueError("--split_dictionary is required for split inference")
     
     # Initialize the SplitG2P

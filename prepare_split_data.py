@@ -16,7 +16,6 @@ The script will:
 """
 
 import argparse
-import os
 import pathlib
 import shutil
 from typing import Dict, List, Tuple
