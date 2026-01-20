@@ -193,6 +193,7 @@ class LitForcedAlignmentTask(pl.LightningModule):
         self.diphthong_split_mode = None
         self.diphthong_mapping = None
         self.diphthong_split_rate = None
+        self.diphthong_split_rules = None  # phoneme name -> component names (for pre-inference transformation)
         
         # Split rules for validation visualization
         self.split_rules = None
@@ -480,7 +481,7 @@ class LitForcedAlignmentTask(pl.LightningModule):
     def set_inference_mode(self, mode):
         self.inference_mode = mode
     
-    def set_diphthong_split_mode(self, mode, mapping, rate=None):
+    def set_diphthong_split_mode(self, mode, mapping, rate=None, split_rules=None):
         """
         Set the diphthong split mode for inference.
         
@@ -488,10 +489,12 @@ class LitForcedAlignmentTask(pl.LightningModule):
             mode: Either "all" (split all diphthongs) or "rate" (probabilistic splitting)
             mapping: Dictionary mapping compound vowel IDs to component vowel IDs
             rate: Split probability when mode is "rate" (0.0-1.0)
+            split_rules: Dictionary mapping compound phoneme names to component phoneme names
         """
         self.diphthong_split_mode = mode
         self.diphthong_mapping = mapping
         self.diphthong_split_rate = rate
+        self.diphthong_split_rules = split_rules
 
     def set_split_rules(self, split_rules):
         """
@@ -506,65 +509,68 @@ class LitForcedAlignmentTask(pl.LightningModule):
         if self.get_melspec is None:
             self.get_melspec = MelSpecExtractor(**self.melspec_config)
 
-    def _apply_diphthong_splits(self, ph_seq, ph_intervals):
+    def _transform_ph_seq_for_splitting(self, ph_seq, word_seq, ph_idx_to_word_idx):
         """
-        Apply diphthong splits to the prediction results.
+        Transform phoneme sequence BEFORE inference by replacing compound vowels 
+        with their component sequences. This allows the model to predict actual 
+        boundaries for the components based on acoustic features.
         
         Args:
             ph_seq: List of phoneme names
-            ph_intervals: Array of (start, end) intervals for each phoneme
+            word_seq: List of word names
+            ph_idx_to_word_idx: Mapping from phoneme index to word index
             
         Returns:
-            Tuple of (new_ph_seq, new_ph_intervals) with splits applied
+            Tuple of (new_ph_seq, new_word_seq, new_ph_idx_to_word_idx)
         """
-        if self.diphthong_split_mode is None or self.diphthong_mapping is None:
-            return ph_seq, ph_intervals
+        if self.diphthong_split_mode is None or self.diphthong_split_rules is None:
+            return ph_seq, word_seq, ph_idx_to_word_idx
         
-        # Find which phonemes can be split
-        splittable_indices = []
+        # Find which phonemes can be split (check if components exist in vocab)
+        splittable = {}
+        for ph in set(ph_seq):
+            if ph in self.diphthong_split_rules:
+                components = self.diphthong_split_rules[ph]
+                # Check if all components exist in vocabulary
+                all_exist = all(comp in self.vocab for comp in components)
+                if all_exist:
+                    splittable[ph] = components
+        
+        if not splittable:
+            return ph_seq, word_seq, ph_idx_to_word_idx
+        
+        # Determine which phoneme instances to actually split
+        split_indices = set()
         for idx, ph in enumerate(ph_seq):
-            if ph in self.vocab:
-                ph_id = self.vocab[ph]
-                if ph_id in self.diphthong_mapping:
-                    splittable_indices.append(idx)
-        
-        # Determine which ones to actually split
-        if self.diphthong_split_mode == "all":
-            split_indices = set(splittable_indices)
-        elif self.diphthong_split_mode == "rate":
-            split_indices = set()
-            for idx in splittable_indices:
-                if random.random() < self.diphthong_split_rate:
+            if ph in splittable:
+                if self.diphthong_split_mode == "all":
                     split_indices.add(idx)
-        else:
-            return ph_seq, ph_intervals
+                elif self.diphthong_split_mode == "rate":
+                    if random.random() < self.diphthong_split_rate:
+                        split_indices.add(idx)
         
-        # Apply splits
+        if not split_indices:
+            return ph_seq, word_seq, ph_idx_to_word_idx
+        
+        # Build new sequences
         new_ph_seq = []
-        new_intervals = []
+        new_ph_idx_to_word_idx = []
         
-        for idx, (ph, interval) in enumerate(zip(ph_seq, ph_intervals)):
+        for idx, ph in enumerate(ph_seq):
             if idx in split_indices:
-                ph_id = self.vocab[ph]
-                component_ids = self.diphthong_mapping[ph_id]
-                num_components = len(component_ids)
-                
-                # Distribute the interval duration equally
-                start, end = interval
-                duration = end - start
-                component_duration = duration / num_components
-                
-                for i, comp_id in enumerate(component_ids):
-                    comp_ph = self.vocab[comp_id]
-                    comp_start = start + i * component_duration
-                    comp_end = start + (i + 1) * component_duration
-                    new_ph_seq.append(comp_ph)
-                    new_intervals.append([comp_start, comp_end])
+                components = splittable[ph]
+                word_idx = ph_idx_to_word_idx[idx] if ph_idx_to_word_idx is not None else idx
+                for comp in components:
+                    new_ph_seq.append(comp)
+                    new_ph_idx_to_word_idx.append(word_idx)
             else:
                 new_ph_seq.append(ph)
-                new_intervals.append(list(interval))
+                if ph_idx_to_word_idx is not None:
+                    new_ph_idx_to_word_idx.append(ph_idx_to_word_idx[idx])
+                else:
+                    new_ph_idx_to_word_idx.append(idx)
         
-        return np.array(new_ph_seq), np.array(new_intervals)
+        return new_ph_seq, word_seq, np.array(new_ph_idx_to_word_idx)
 
     def predict_step(self, batch, batch_idx):
         try:
@@ -578,6 +584,13 @@ class LitForcedAlignmentTask(pl.LightningModule):
             melspec = repeat(
                 melspec, "B C T -> B C (T N)", N=self.melspec_config["scale_factor"]
             )
+            
+            # Transform phoneme sequence BEFORE inference if diphthong splitting is enabled
+            # This allows the model to predict actual boundaries for component phonemes
+            if self.diphthong_split_mode is not None:
+                ph_seq, word_seq, ph_idx_to_word_idx = self._transform_ph_seq_for_splitting(
+                    ph_seq, word_seq, ph_idx_to_word_idx
+                )
 
             (
                 ph_seq,
@@ -590,10 +603,6 @@ class LitForcedAlignmentTask(pl.LightningModule):
             ) = self._infer_once(
                 melspec, wav_length, ph_seq, word_seq, ph_idx_to_word_idx, False, False
             )
-            
-            # Apply diphthong splits if enabled
-            if self.diphthong_split_mode is not None:
-                ph_seq, ph_intervals = self._apply_diphthong_splits(ph_seq, ph_intervals)
 
             return (
                 wav_path,
