@@ -11,6 +11,11 @@ from tqdm import tqdm
 
 from modules.utils.get_melspec import MelSpecExtractor
 from modules.utils.load_wav import load_wav
+from modules.utils.phoneme_merge import (
+    build_phoneme_merge_mapping,
+    apply_merge_to_phoneme,
+    summarize_merge_groups
+)
 
 
 class ForcedAlignmentBinarizer:
@@ -24,6 +29,7 @@ class ForcedAlignmentBinarizer:
         melspec_config,
         max_length,
         split_rules=None,
+        merged_phoneme_groups=None,
     ):
         self.data_folder = pathlib.Path(data_folder)
         self.valid_set_size = valid_set_size
@@ -47,9 +53,13 @@ class ForcedAlignmentBinarizer:
         self.split_rules = split_rules if split_rules else {}
         # Reverse mapping for detecting component sequences during binarization
         self.reverse_id_mapping = None  # Will be built after vocab is created
+        
+        # Phoneme merge groups for reducing vocabulary size
+        self.merged_phoneme_groups = merged_phoneme_groups if merged_phoneme_groups else []
+        self.merge_mapping = {}  # Will be built after scanning phonemes
 
     @staticmethod
-    def get_vocab(data_folder_path, ignored_phonemes, split_rules=None):
+    def get_vocab(data_folder_path, ignored_phonemes, split_rules=None, merged_phoneme_groups=None, merge_mapping=None):
         print("Generating vocab...")
         phonemes = []
         trans_path_list = data_folder_path.rglob("transcriptions.csv")
@@ -73,6 +83,17 @@ class ForcedAlignmentBinarizer:
                     phonemes.add(comp)
             print(f"Added {len(split_rules)} compound vowels and {sum(len(c) for c in split_rules.values())} component phonemes from split rules")
         
+        # Apply phoneme merging if configured
+        # This reduces vocabulary size by mapping acoustically identical phonemes to canonical forms
+        if merge_mapping:
+            merged_phonemes = set()
+            for p in phonemes:
+                canonical = apply_merge_to_phoneme(p, merge_mapping)
+                merged_phonemes.add(canonical)
+            original_size = len(phonemes)
+            phonemes = merged_phonemes
+            print(f"Phoneme merging: {original_size} -> {len(phonemes)} phonemes")
+        
         for p in ignored_phonemes:
             if p in phonemes:
                 phonemes.remove(p)
@@ -89,7 +110,18 @@ class ForcedAlignmentBinarizer:
         return vocab
 
     def process(self):
-        vocab = self.get_vocab(self.data_folder, self.ignored_phonemes, self.split_rules)
+        # Build phoneme merge mapping first if configured
+        if self.merged_phoneme_groups:
+            self.merge_mapping, _ = build_phoneme_merge_mapping(self.merged_phoneme_groups)
+            print(summarize_merge_groups(self.merged_phoneme_groups))
+        
+        vocab = self.get_vocab(
+            self.data_folder, 
+            self.ignored_phonemes, 
+            self.split_rules,
+            self.merged_phoneme_groups,
+            self.merge_mapping
+        )
         with open(self.data_folder / "binary" / "vocab.yaml", "w") as file:
             yaml.dump(vocab, file)
         
@@ -418,9 +450,28 @@ class ForcedAlignmentBinarizer:
 
         meta_data_df.reset_index(drop=True, inplace=True)
 
-        meta_data_df["ph_seq"] = meta_data_df["ph_seq"].apply(
-            lambda x: ([vocab[i] for i in x.split(" ")] if isinstance(x, str) else [])
-        )
+        # Apply phoneme merging when converting to IDs
+        # This maps acoustically identical phonemes to their canonical forms
+        merge_mapping = self.merge_mapping
+        sp_id = vocab["SP"]  # SP is always ID 0, but use vocab for clarity
+        
+        def convert_phonemes_to_ids(ph_seq_str):
+            if not isinstance(ph_seq_str, str):
+                return []
+            ids = []
+            for phoneme in ph_seq_str.split(" "):
+                merged = apply_merge_to_phoneme(phoneme, merge_mapping)
+                if merged in vocab:
+                    ids.append(vocab[merged])
+                elif phoneme in vocab:
+                    # Fall back to original phoneme if merged form not found
+                    ids.append(vocab[phoneme])
+                else:
+                    # Unknown phoneme, map to SP
+                    ids.append(sp_id)
+            return ids
+        
+        meta_data_df["ph_seq"] = meta_data_df["ph_seq"].apply(convert_phonemes_to_ids)
         if "ph_dur" in meta_data_df.columns:
             meta_data_df["ph_dur"] = meta_data_df["ph_dur"].apply(
                 lambda x: (
@@ -476,10 +527,16 @@ def binarize(config_path: str, split_diphthong: bool, split_dict: str):
     else:
         split_rules = None
     
+    # Handle merged_phoneme_groups configuration
+    merged_phoneme_groups = config.get("merged_phoneme_groups", [])
+    if merged_phoneme_groups:
+        global_config["merged_phoneme_groups"] = merged_phoneme_groups
+        print(f"Phoneme merging enabled with {len(merged_phoneme_groups)} merge groups")
+    
     with open(pathlib.Path("data/binary/") / "global_config.yaml", "w") as file:
         yaml.dump(global_config, file)
 
-    ForcedAlignmentBinarizer(**config, split_rules=split_rules).process()
+    ForcedAlignmentBinarizer(**config, split_rules=split_rules, merged_phoneme_groups=merged_phoneme_groups).process()
 
 
 if __name__ == "__main__":

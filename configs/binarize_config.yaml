@@ -26,3 +26,13 @@ data_augmentation:
   key_shift_choices: [ 1, 2, 3, 4, 5, 6,-1,-2,-3,-4,-5,-6 ]
 
 max_length: 45 # unit: second
+
+# Merged phoneme groups: phonemes in the same group share the same acoustic features
+# and will be mapped to a single canonical phoneme (the first one in the group).
+# This reduces vocabulary size and helps the model learn shared acoustic features.
+# Example:
+# merged_phoneme_groups:
+#   - [SP, cl]
+#   - [yue/a, ja/a, ko/a, zh/a#]
+#   - [yue/iy, en/iy, ja/i, ko/i]
+merged_phoneme_groups: []
