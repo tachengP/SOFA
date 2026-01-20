@@ -536,6 +536,10 @@ def binarize(config_path: str, split_diphthong: bool, split_dict: str):
     with open(pathlib.Path("data/binary/") / "global_config.yaml", "w") as file:
         yaml.dump(global_config, file)
 
+    # Remove merged_phoneme_groups from config to avoid duplicate keyword argument
+    # since it's passed explicitly below
+    config.pop("merged_phoneme_groups", None)
+    
     ForcedAlignmentBinarizer(**config, split_rules=split_rules, merged_phoneme_groups=merged_phoneme_groups).process()
 
 
