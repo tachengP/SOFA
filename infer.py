@@ -75,14 +75,18 @@ from train import LitForcedAlignmentTask
     is_flag=True,
     default=False,
     show_default=True,
-    help="Split all compound vowels (diphthongs) into their component vowels during inference.",
+    help="Split all compound vowels (diphthongs) into their component vowels during inference. "
+         "Duration is distributed evenly among components. Use this for models trained "
+         "WITHOUT --split_diphthong. Models trained WITH --split_diphthong already output "
+         "component vowels directly.",
 )
 @click.option(
     "--split_diphthong_rate",
     type=float,
     default=None,
     help="Probability (0.0-1.0) of splitting each individual diphthong instance. "
-         "Each diphthong is independently selected for splitting with this probability.",
+         "Each diphthong is independently selected for splitting with this probability. "
+         "Duration is distributed evenly. Use for models trained WITHOUT --split_diphthong.",
 )
 @click.option(
     "--split_dict",
