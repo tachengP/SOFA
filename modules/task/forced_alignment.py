@@ -806,13 +806,14 @@ class LitForcedAlignmentTask(pl.LightningModule):
         # - We use the ground truth compound vowel ID from ph_frame_compound_gt
         
         # Gather the compound vowel probabilities
-        compound_ids = ph_frame_compound_gt.long()  # (B, T)
+        # Note: For frames without compound vowel (id=0), compound_mask will be 0 and those won't contribute to loss
+        compound_ids = ph_frame_compound_gt.long().clamp(min=0)  # (B, T) - clamp to avoid negative indices
         compound_probs = torch.gather(ph_frame_prob, dim=2, index=compound_ids.unsqueeze(-1)).squeeze(-1)  # (B, T)
         
         # We want to maximize the probability of compound vowels in frames where components are
         # This is equivalent to minimizing -log(prob), i.e., cross entropy
         # But we use soft target: encourage compound prob to be at least as high as component prob
-        component_ids = ph_frame_gt.long()  # (B, T)
+        component_ids = ph_frame_gt.long().clamp(min=0)  # (B, T)
         component_probs = torch.gather(ph_frame_prob, dim=2, index=component_ids.unsqueeze(-1)).squeeze(-1)  # (B, T)
         
         # Loss: encourage compound_prob >= component_prob
@@ -820,7 +821,7 @@ class LitForcedAlignmentTask(pl.LightningModule):
         margin = 0.0
         loss_per_frame = torch.nn.functional.relu(component_probs - compound_probs + margin)
         
-        # Apply mask and compute mean
+        # Apply mask and compute mean (compound_mask is already 0 for frames with compound_id=0)
         loss = (loss_per_frame * compound_mask).sum() / (compound_mask.sum() + 1e-6)
         
         return loss
