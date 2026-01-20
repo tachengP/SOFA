@@ -1,5 +1,6 @@
 import os
 import pathlib
+import warnings
 
 import click
 import lightning as pl
@@ -74,8 +75,12 @@ def main(config_path: str, data_folder: str, pretrained_model_path, resume, spli
         print("Note: Data was binarized with diphthong splitting enabled. "
               "Compound vowels have been transformed into component vowels in training data.")
     elif split_diphthong:
-        print("Warning: --split_diphthong flag in train.py is deprecated. "
-              "Please re-run binarize.py with --split_diphthong to enable this feature.")
+        warnings.warn(
+            "--split_diphthong flag in train.py is deprecated. "
+            "Please re-run binarize.py with --split_diphthong to enable this feature.",
+            DeprecationWarning,
+            stacklevel=2
+        )
 
     torch.set_float32_matmul_precision(config["float32_matmul_precision"])
     pl.seed_everything(config["random_seed"], workers=True)

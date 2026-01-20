@@ -87,6 +87,62 @@ class ForcedAlignmentBinarizer:
 
         return vocab
 
+    def _apply_split_to_row(self, row):
+        """
+        Apply split rules to a single row's ph_seq and ph_dur.
+        
+        This method transforms compound vowels into their component vowels
+        with duration evenly distributed among components.
+        
+        Args:
+            row: A pandas Series containing 'ph_seq' and optionally 'ph_dur' columns
+            
+        Returns:
+            The modified row with split phonemes
+        """
+        # Skip rows where ph_seq is not a string (e.g., NaN values from no_label data
+        # or rows that failed to load properly)
+        if not isinstance(row.get("ph_seq"), str):
+            return row
+        
+        ph_seq_str = row["ph_seq"].split(" ")
+        ph_dur_str = row.get("ph_dur", "").split(" ") if isinstance(row.get("ph_dur"), str) else []
+        
+        # Check if we have duration info (weak_label data may not have ph_dur)
+        has_dur = len(ph_dur_str) == len(ph_seq_str)
+        
+        new_ph_seq = []
+        new_ph_dur = []
+        
+        for idx, ph in enumerate(ph_seq_str):
+            if ph in self.split_rules:
+                # This is a compound vowel that should be split
+                components = self.split_rules[ph]
+                new_ph_seq.extend(components)
+                
+                if has_dur:
+                    # Evenly distribute the duration among components
+                    try:
+                        dur = float(ph_dur_str[idx])
+                    except ValueError as e:
+                        wav_path = row.get("wav_path", "unknown")
+                        raise ValueError(
+                            f"Invalid duration value '{ph_dur_str[idx]}' for phoneme '{ph}' "
+                            f"at index {idx} in file '{wav_path}': {e}"
+                        )
+                    component_dur = dur / len(components)
+                    new_ph_dur.extend([str(component_dur)] * len(components))
+            else:
+                new_ph_seq.append(ph)
+                if has_dur:
+                    new_ph_dur.append(ph_dur_str[idx])
+        
+        row["ph_seq"] = " ".join(new_ph_seq)
+        if has_dur:
+            row["ph_dur"] = " ".join(new_ph_dur)
+        
+        return row
+
     def process(self):
         vocab = self.get_vocab(self.data_folder, self.ignored_phonemes, self.split_rules)
         with open(self.data_folder / "binary" / "vocab.yaml", "w") as file:
@@ -382,44 +438,8 @@ class ForcedAlignmentBinarizer:
 
         # Apply split rules to transform compound vowels into component vowels
         if self.split_rules:
-            def apply_split_to_row(row):
-                """Apply split rules to a single row's ph_seq and ph_dur."""
-                if not isinstance(row.get("ph_seq"), str):
-                    return row
-                
-                ph_seq_str = row["ph_seq"].split(" ")
-                ph_dur_str = row.get("ph_dur", "").split(" ") if isinstance(row.get("ph_dur"), str) else []
-                
-                # Check if we have duration info
-                has_dur = len(ph_dur_str) == len(ph_seq_str)
-                
-                new_ph_seq = []
-                new_ph_dur = []
-                
-                for idx, ph in enumerate(ph_seq_str):
-                    if ph in self.split_rules:
-                        # This is a compound vowel that should be split
-                        components = self.split_rules[ph]
-                        new_ph_seq.extend(components)
-                        
-                        if has_dur:
-                            # Evenly distribute the duration among components
-                            dur = float(ph_dur_str[idx])
-                            component_dur = dur / len(components)
-                            new_ph_dur.extend([str(component_dur)] * len(components))
-                    else:
-                        new_ph_seq.append(ph)
-                        if has_dur:
-                            new_ph_dur.append(ph_dur_str[idx])
-                
-                row["ph_seq"] = " ".join(new_ph_seq)
-                if has_dur:
-                    row["ph_dur"] = " ".join(new_ph_dur)
-                
-                return row
-            
             print(f"Applying split rules to transform compound vowels...")
-            meta_data_df = meta_data_df.apply(apply_split_to_row, axis=1)
+            meta_data_df = meta_data_df.apply(self._apply_split_to_row, axis=1)
 
         meta_data_df["ph_seq"] = meta_data_df["ph_seq"].apply(
             lambda x: ([vocab[i] for i in x.split(" ")] if isinstance(x, str) else [])
