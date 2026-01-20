@@ -224,7 +224,7 @@ def main(
         if diphthong_split_mode and split_rules:
             from modules.utils.diphthong_split import build_diphthong_mapping
             diphthong_mapping = build_diphthong_mapping(model.vocab, split_rules)
-            model.set_diphthong_split_mode(diphthong_split_mode, diphthong_mapping, split_diphthong_rate)
+            model.set_diphthong_split_mode(diphthong_split_mode, diphthong_mapping, split_diphthong_rate, split_rules)
         
         model.set_inference_mode(mode)
         trainer = pl.Trainer(logger=False)

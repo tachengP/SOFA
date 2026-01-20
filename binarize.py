@@ -45,6 +45,8 @@ class ForcedAlignmentBinarizer:
         
         # Split rules for compound vowel splitting
         self.split_rules = split_rules if split_rules else {}
+        # Reverse mapping for detecting component sequences during binarization
+        self.reverse_id_mapping = None  # Will be built after vocab is created
 
     @staticmethod
     def get_vocab(data_folder_path, ignored_phonemes, split_rules=None):
@@ -60,14 +62,16 @@ class ForcedAlignmentBinarizer:
 
         phonemes = set(phonemes)
         
-        # If split_rules are provided, add the split component phonemes to vocabulary
-        # Note: Compound vowels are preserved in the vocabulary - we add components alongside them
+        # If split_rules are provided, add both compound vowels and component phonemes to vocabulary
         # This allows the model to learn both compound vowels AND their components
         if split_rules:
             for compound, components in split_rules.items():
+                # Add compound vowel to ensure it exists in vocabulary
+                phonemes.add(compound)
+                # Add component phonemes
                 for comp in components:
                     phonemes.add(comp)
-            print(f"Added {sum(len(c) for c in split_rules.values())} component phonemes from split rules")
+            print(f"Added {len(split_rules)} compound vowels and {sum(len(c) for c in split_rules.values())} component phonemes from split rules")
         
         for p in ignored_phonemes:
             if p in phonemes:
@@ -88,6 +92,14 @@ class ForcedAlignmentBinarizer:
         vocab = self.get_vocab(self.data_folder, self.ignored_phonemes, self.split_rules)
         with open(self.data_folder / "binary" / "vocab.yaml", "w") as file:
             yaml.dump(vocab, file)
+        
+        # Build reverse ID mapping for detecting component sequences
+        if self.split_rules:
+            from modules.utils.diphthong_split import build_reverse_mapping_with_ids
+            self.reverse_id_mapping = build_reverse_mapping_with_ids(self.split_rules, vocab)
+            print(f"Built reverse ID mapping with {len(self.reverse_id_mapping)} compound vowel patterns")
+        else:
+            self.reverse_id_mapping = {}
 
         # load metadata of each item
         meta_data_df = self.get_meta_data(self.data_folder, vocab)
@@ -205,6 +217,9 @@ class ForcedAlignmentBinarizer:
 
                     # ph_frame: [scale_factor * T]
                     ph_frame = np.zeros(T, dtype="int32")
+                    
+                    # ph_frame_compound: compound vowel associations (none for no_label)
+                    ph_frame_compound = np.zeros(T, dtype="int32")
 
                     # ph_mask: [vocab_size]
                     ph_mask = np.ones(vocab["<vocab_size>"], dtype="int32")
@@ -218,6 +233,9 @@ class ForcedAlignmentBinarizer:
 
                     # ph_frame: [scale_factor * T]
                     ph_frame = np.zeros(T, dtype="int32")
+                    
+                    # ph_frame_compound: compound vowel associations (none for weak_label)
+                    ph_frame_compound = np.zeros(T, dtype="int32")
 
                     # ph_mask: [vocab_size]
                     ph_mask = np.zeros(vocab["<vocab_size>"], dtype="int32")
@@ -272,6 +290,28 @@ class ForcedAlignmentBinarizer:
                     if len(ph_seq) > 0:
                         ph_mask[ph_seq] = 1
                     ph_mask[0] = 1
+                    
+                    # Detect component sequences and create compound vowel associations
+                    # ph_frame_compound: parallel array that stores compound vowel ID for frames
+                    # where component sequences are detected (0 otherwise)
+                    ph_frame_compound = np.zeros(T, dtype="int32")
+                    if self.reverse_id_mapping and len(ph_seq) > 0:
+                        from modules.utils.diphthong_split import find_component_sequences_in_ids
+                        component_matches = find_component_sequences_in_ids(
+                            ph_seq.tolist(), self.reverse_id_mapping
+                        )
+                        for start_idx, end_idx, compound_id in component_matches:
+                            # Add compound vowel to mask
+                            ph_mask[compound_id] = 1
+                            # Mark the frames covered by these components with compound vowel ID
+                            # Get the frame range for these component phonemes
+                            start_frame = int(np.round(ph_interval[0, start_idx]))
+                            end_frame = int(np.round(ph_interval[1, end_idx - 1]))
+                            if start_frame < 0:
+                                start_frame = 0
+                            if end_frame > T:
+                                end_frame = T
+                            ph_frame_compound[start_frame:end_frame] = compound_id
                 else:
                     raise ValueError("Unknown label type.")
 
@@ -279,6 +319,7 @@ class ForcedAlignmentBinarizer:
                 h5py_item_data["ph_edge"] = ph_edge.astype("float32")
                 h5py_item_data["ph_frame"] = ph_frame.astype("int32")
                 h5py_item_data["ph_mask"] = ph_mask.astype("int32")
+                h5py_item_data["ph_frame_compound"] = ph_frame_compound.astype("int32")
 
                 # print(
                 #     h5py_item_data["input_feature"].shape,

@@ -91,12 +91,19 @@ class MixedDataset(torch.utils.data.Dataset):
 
         # ph_mask
         ph_mask = np.array(item["ph_mask"])
+        
+        # ph_frame_compound (for compound vowel association loss)
+        if "ph_frame_compound" in item:
+            ph_frame_compound = np.array(item["ph_frame_compound"])
+        else:
+            # Backward compatibility: create zero array if not present
+            ph_frame_compound = np.zeros_like(ph_frame)
 
         input_feature = np.repeat(
             input_feature, len(ph_frame) // input_feature.shape[-1], axis=-1
         )
 
-        return input_feature, ph_seq, ph_edge, ph_frame, ph_mask, label_type
+        return input_feature, ph_seq, ph_edge, ph_frame, ph_mask, label_type, ph_frame_compound
 
 
 class WeightedBinningAudioBatchSampler(torch.utils.data.Sampler):
@@ -236,7 +243,7 @@ def collate_fn(batch):
     """_summary_
 
     Args:
-        batch (tuple): input_feature, ph_seq, ph_edge, ph_frame, ph_mask, label_type from MixedDataset
+        batch (tuple): input_feature, ph_seq, ph_edge, ph_frame, ph_mask, label_type, ph_frame_compound from MixedDataset
 
     Returns:
         input_feature: (B C T)
@@ -247,6 +254,7 @@ def collate_fn(batch):
         ph_frame: (B T)
         ph_mask: (B vocab_size)
         label_type: (B)
+        ph_frame_compound: (B T)
     """
     input_feature_lengths = torch.tensor([i[0].shape[-1] for i in batch])
     max_len = max(input_feature_lengths)
@@ -260,7 +268,7 @@ def collate_fn(batch):
     # padding
     for i, item in enumerate(batch):
         item = list(item)
-        for param in [0, 2, 3]:
+        for param in [0, 2, 3, 6]:  # input_feature, ph_edge, ph_frame, ph_frame_compound
             item[param] = torch.nn.functional.pad(
                 torch.tensor(item[param]),
                 (0, max_len - item[param].shape[-1]),
@@ -282,6 +290,7 @@ def collate_fn(batch):
     ph_edge = torch.stack([item[2] for item in batch])
     ph_frame = torch.stack([item[3] for item in batch])
     ph_mask = torch.stack([item[4] for item in batch])
+    ph_frame_compound = torch.stack([item[6] for item in batch])
 
     label_type = torch.tensor(np.array([item[5] for item in batch]))
 
@@ -295,6 +304,7 @@ def collate_fn(batch):
         ph_frame = torch.concat([ph_frame, ph_frame], dim=0)
         ph_mask = torch.concat([ph_mask, ph_mask], dim=0)
         label_type = torch.concat([label_type, label_type], dim=0)
+        ph_frame_compound = torch.concat([ph_frame_compound, ph_frame_compound], dim=0)
 
     return (
         input_feature,
@@ -305,6 +315,7 @@ def collate_fn(batch):
         ph_frame,
         ph_mask,
         label_type,
+        ph_frame_compound,
     )
 
 

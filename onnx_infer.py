@@ -1,5 +1,6 @@
 import os
 import pathlib
+import random
 
 import click
 import numpy as np
@@ -184,6 +185,74 @@ def decode(ph_seq_id, ph_prob_log, edge_prob):
         np.array(ph_time_int),
         np.array(frame_confidence),
     )
+
+
+def transform_ph_seq_for_splitting(ph_seq, word_seq, ph_idx_to_word_idx, split_rules, vocab, split_mode, split_rate=None):
+    """
+    Transform phoneme sequence BEFORE inference by replacing compound vowels 
+    with their component sequences. This allows the model to predict actual 
+    boundaries for the components based on acoustic features.
+    
+    Args:
+        ph_seq: List of phoneme names
+        word_seq: List of word names
+        ph_idx_to_word_idx: Mapping from phoneme index to word index
+        split_rules: Dictionary mapping compound phoneme names to component phoneme names
+        vocab: Vocabulary dictionary
+        split_mode: "all" or "rate"
+        split_rate: Split probability when mode is "rate"
+        
+    Returns:
+        Tuple of (new_ph_seq, new_word_seq, new_ph_idx_to_word_idx)
+    """
+    if split_rules is None or split_mode is None:
+        return ph_seq, word_seq, ph_idx_to_word_idx
+    
+    # Find which phonemes can be split (check if components exist in vocab)
+    splittable = {}
+    for ph in set(ph_seq):
+        if ph in split_rules:
+            components = split_rules[ph]
+            # Check if all components exist in vocabulary
+            all_exist = all(comp in vocab for comp in components)
+            if all_exist:
+                splittable[ph] = components
+    
+    if not splittable:
+        return ph_seq, word_seq, ph_idx_to_word_idx
+    
+    # Determine which phoneme instances to actually split
+    split_indices = set()
+    for idx, ph in enumerate(ph_seq):
+        if ph in splittable:
+            if split_mode == "all":
+                split_indices.add(idx)
+            elif split_mode == "rate" and split_rate is not None:
+                if random.random() < split_rate:
+                    split_indices.add(idx)
+    
+    if not split_indices:
+        return ph_seq, word_seq, ph_idx_to_word_idx
+    
+    # Build new sequences
+    new_ph_seq = []
+    new_ph_idx_to_word_idx = []
+    
+    for idx, ph in enumerate(ph_seq):
+        if idx in split_indices:
+            components = splittable[ph]
+            word_idx = ph_idx_to_word_idx[idx] if ph_idx_to_word_idx is not None else idx
+            for comp in components:
+                new_ph_seq.append(comp)
+                new_ph_idx_to_word_idx.append(word_idx)
+        else:
+            new_ph_seq.append(ph)
+            if ph_idx_to_word_idx is not None:
+                new_ph_idx_to_word_idx.append(ph_idx_to_word_idx[idx])
+            else:
+                new_ph_idx_to_word_idx.append(idx)
+    
+    return new_ph_seq, word_seq, np.array(new_ph_idx_to_word_idx)
 
 
 @click.command()
@@ -388,6 +457,15 @@ def infer(onnx,
 
         for i in tqdm(range(len(dataset)), desc="Processing", unit="sample"):
             wav_path, ph_seq, word_seq, ph_idx_to_word_idx = dataset[i]
+            
+            # Transform phoneme sequence BEFORE inference if diphthong splitting is enabled
+            # This allows the model to predict actual boundaries for component phonemes
+            if split_rules and (split_all_diphthong or split_diphthong_rate is not None):
+                split_mode = "all" if split_all_diphthong else "rate"
+                ph_seq, word_seq, ph_idx_to_word_idx = transform_ph_seq_for_splitting(
+                    ph_seq, word_seq, ph_idx_to_word_idx,
+                    split_rules, config['vocab'], split_mode, split_diphthong_rate
+                )
 
             waveform, sr = torchaudio.load(wav_path)
             waveform = waveform[0][None, :][0]
@@ -445,28 +523,10 @@ def infer(onnx,
                     word_intervals_pred.append([ph_intervals[j, 0], ph_intervals[j, 1]])
                     word_idx_last = word_idx
             
-            ph_seq_pred = list(ph_seq_pred)
-            ph_intervals_pred = [list(interval) for interval in ph_intervals_pred]
-            
-            # Apply diphthong splitting if enabled
-            if split_rules and (split_all_diphthong or split_diphthong_rate is not None):
-                from modules.utils.diphthong_split import apply_split_to_annotations
-                
-                if split_all_diphthong:
-                    ph_seq_pred, ph_intervals_pred = apply_split_to_annotations(
-                        ph_seq_pred, [(s, e) for s, e in ph_intervals_pred], 
-                        split_rules, "all"
-                    )
-                elif split_diphthong_rate is not None:
-                    ph_seq_pred, ph_intervals_pred = apply_split_to_annotations(
-                        ph_seq_pred, [(s, e) for s, e in ph_intervals_pred],
-                        split_rules, "rate", split_diphthong_rate
-                    )
-            
-            ph_seq_pred = np.array(ph_seq_pred)
-            ph_intervals_pred = np.array(ph_intervals_pred).clip(min=0, max=None)
-            word_seq_pred = np.array(word_seq_pred)
-            word_intervals_pred = np.array(word_intervals_pred).clip(min=0, max=None)
+            ph_seq_pred = np.array(ph_seq_pred) if len(ph_seq_pred) > 0 else np.array([])
+            ph_intervals_pred = np.array(ph_intervals_pred).clip(min=0, max=None) if len(ph_intervals_pred) > 0 else np.array([])
+            word_seq_pred = np.array(word_seq_pred) if len(word_seq_pred) > 0 else np.array([])
+            word_intervals_pred = np.array(word_intervals_pred).clip(min=0, max=None) if len(word_intervals_pred) > 0 else np.array([])
 
             predictions.append((wav_path,
                                 wav_length,
