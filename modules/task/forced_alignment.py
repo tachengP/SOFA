@@ -1,5 +1,6 @@
 from typing import Any
 import random
+import warnings
 
 import lightning as pl
 import numpy as np
@@ -139,10 +140,48 @@ class LitForcedAlignmentTask(pl.LightningModule):
             "compound_vowel_loss",
             "total_loss",
         ]
-        self.losses_weights = torch.tensor(loss_config["losses"]["weights"])
+        # Number of losses (excluding total_loss)
+        num_losses = len(self.losses_names) - 1
+        
+        # Handle weights configuration
+        # Pad with default value (1.0) if config has fewer weights than losses
+        # Truncate if config has more weights than losses
+        weights = list(loss_config["losses"]["weights"])
+        if len(weights) < num_losses:
+            warnings.warn(
+                f"Config has {len(weights)} loss weights but {num_losses} losses are defined. "
+                f"Padding with default weight 1.0 for missing entries.",
+                UserWarning
+            )
+            weights.extend([1.0] * (num_losses - len(weights)))
+        elif len(weights) > num_losses:
+            warnings.warn(
+                f"Config has {len(weights)} loss weights but only {num_losses} losses are defined. "
+                f"Extra weights will be ignored.",
+                UserWarning
+            )
+        self.losses_weights = torch.tensor(weights[:num_losses])
+
+        # Handle scheduler settings configuration
+        # Pad with default value (True) if config has fewer entries than losses
+        # Truncate if config has more entries than losses
+        scheduler_settings = list(loss_config["losses"]["enable_RampUpScheduler"])
+        if len(scheduler_settings) < num_losses:
+            warnings.warn(
+                f"Config has {len(scheduler_settings)} scheduler settings but {num_losses} losses are defined. "
+                f"Padding with default value True for missing entries.",
+                UserWarning
+            )
+            scheduler_settings.extend([True] * (num_losses - len(scheduler_settings)))
+        elif len(scheduler_settings) > num_losses:
+            warnings.warn(
+                f"Config has {len(scheduler_settings)} scheduler settings but only {num_losses} losses are defined. "
+                f"Extra settings will be ignored.",
+                UserWarning
+            )
 
         self.losses_schedulers = []
-        for enabled in loss_config["losses"]["enable_RampUpScheduler"]:
+        for enabled in scheduler_settings[:num_losses]:
             if enabled:
                 self.losses_schedulers.append(
                     scheduler_module.GaussianRampUpScheduler(
