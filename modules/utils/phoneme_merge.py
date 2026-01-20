@@ -79,6 +79,9 @@ def apply_merge_to_phoneme_list(
     """
     Apply merge mapping to a list of phonemes.
     
+    Note: This is a utility function provided for external use or testing.
+    It is used internally for testing but could be useful for batch processing.
+    
     Args:
         phonemes: List of phonemes
         merge_mapping: Dict mapping phonemes to their canonical forms
@@ -96,6 +99,10 @@ def get_merged_vocab(
 ) -> Dict:
     """
     Generate a vocabulary with merged phonemes.
+    
+    Note: This is an alternative utility function that could be used
+    for standalone vocabulary generation. Currently, the vocabulary
+    generation is done inline in binarize.py's get_vocab method.
     
     Args:
         original_phonemes: Set of original phonemes from the data
@@ -138,8 +145,9 @@ def build_phoneme_id_merge_mapping(
     """
     Build a mapping from phoneme IDs to their canonical (merged) IDs.
     
-    This is useful for converting between vocabularies where merging wasn't applied
-    during vocab creation.
+    Note: This is a utility function for converting between vocabularies 
+    where merging wasn't applied during vocab creation. It can be useful
+    for inference with pre-existing vocabularies.
     
     Args:
         merge_mapping: Dict mapping phoneme names to their canonical forms

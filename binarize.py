@@ -453,9 +453,25 @@ class ForcedAlignmentBinarizer:
         # Apply phoneme merging when converting to IDs
         # This maps acoustically identical phonemes to their canonical forms
         merge_mapping = self.merge_mapping
-        meta_data_df["ph_seq"] = meta_data_df["ph_seq"].apply(
-            lambda x: ([vocab[apply_merge_to_phoneme(i, merge_mapping)] for i in x.split(" ")] if isinstance(x, str) else [])
-        )
+        sp_id = vocab["SP"]  # SP is always ID 0, but use vocab for clarity
+        
+        def convert_phonemes_to_ids(ph_seq_str):
+            if not isinstance(ph_seq_str, str):
+                return []
+            ids = []
+            for phoneme in ph_seq_str.split(" "):
+                merged = apply_merge_to_phoneme(phoneme, merge_mapping)
+                if merged in vocab:
+                    ids.append(vocab[merged])
+                elif phoneme in vocab:
+                    # Fall back to original phoneme if merged form not found
+                    ids.append(vocab[phoneme])
+                else:
+                    # Unknown phoneme, map to SP
+                    ids.append(sp_id)
+            return ids
+        
+        meta_data_df["ph_seq"] = meta_data_df["ph_seq"].apply(convert_phonemes_to_ids)
         if "ph_dur" in meta_data_df.columns:
             meta_data_df["ph_dur"] = meta_data_df["ph_dur"].apply(
                 lambda x: (
