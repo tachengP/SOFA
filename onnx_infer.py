@@ -1,5 +1,6 @@
 import os
 import pathlib
+import random
 
 import click
 import numpy as np
@@ -204,8 +205,6 @@ def transform_ph_seq_for_splitting(ph_seq, word_seq, ph_idx_to_word_idx, split_r
     Returns:
         Tuple of (new_ph_seq, new_word_seq, new_ph_idx_to_word_idx)
     """
-    import random
-    
     if split_rules is None or split_mode is None:
         return ph_seq, word_seq, ph_idx_to_word_idx
     
@@ -524,9 +523,9 @@ def infer(onnx,
                     word_intervals_pred.append([ph_intervals[j, 0], ph_intervals[j, 1]])
                     word_idx_last = word_idx
             
-            ph_seq_pred = np.array(ph_seq_pred)
+            ph_seq_pred = np.array(ph_seq_pred) if len(ph_seq_pred) > 0 else np.array([])
             ph_intervals_pred = np.array(ph_intervals_pred).clip(min=0, max=None) if len(ph_intervals_pred) > 0 else np.array([])
-            word_seq_pred = np.array(word_seq_pred)
+            word_seq_pred = np.array(word_seq_pred) if len(word_seq_pred) > 0 else np.array([])
             word_intervals_pred = np.array(word_intervals_pred).clip(min=0, max=None) if len(word_intervals_pred) > 0 else np.array([])
 
             predictions.append((wav_path,
