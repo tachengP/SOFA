@@ -139,10 +139,23 @@ class LitForcedAlignmentTask(pl.LightningModule):
             "compound_vowel_loss",
             "total_loss",
         ]
-        self.losses_weights = torch.tensor(loss_config["losses"]["weights"])
+        # Number of losses (excluding total_loss)
+        num_losses = len(self.losses_names) - 1
+        
+        # Pad weights with default value (1.0) if config has fewer weights than losses
+        # This provides backward compatibility with older configs
+        weights = list(loss_config["losses"]["weights"])
+        if len(weights) < num_losses:
+            weights.extend([1.0] * (num_losses - len(weights)))
+        self.losses_weights = torch.tensor(weights[:num_losses])
+
+        # Pad scheduler settings with default value (True) if config has fewer entries
+        scheduler_settings = list(loss_config["losses"]["enable_RampUpScheduler"])
+        if len(scheduler_settings) < num_losses:
+            scheduler_settings.extend([True] * (num_losses - len(scheduler_settings)))
 
         self.losses_schedulers = []
-        for enabled in loss_config["losses"]["enable_RampUpScheduler"]:
+        for enabled in scheduler_settings[:num_losses]:
             if enabled:
                 self.losses_schedulers.append(
                     scheduler_module.GaussianRampUpScheduler(
