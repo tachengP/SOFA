@@ -23,6 +23,7 @@ class ForcedAlignmentBinarizer:
         ignored_phonemes,
         melspec_config,
         max_length,
+        split_rules=None,
     ):
         self.data_folder = pathlib.Path(data_folder)
         self.valid_set_size = valid_set_size
@@ -41,9 +42,12 @@ class ForcedAlignmentBinarizer:
         self.frame_length = self.melspec_config["hop_length"] / self.sample_rate
 
         self.get_melspec = MelSpecExtractor(**melspec_config, device=self.device)
+        
+        # Split rules for compound vowel splitting
+        self.split_rules = split_rules if split_rules else {}
 
     @staticmethod
-    def get_vocab(data_folder_path, ignored_phonemes):
+    def get_vocab(data_folder_path, ignored_phonemes, split_rules=None):
         print("Generating vocab...")
         phonemes = []
         trans_path_list = data_folder_path.rglob("transcriptions.csv")
@@ -55,6 +59,16 @@ class ForcedAlignmentBinarizer:
                 phonemes.extend(ph)
 
         phonemes = set(phonemes)
+        
+        # If split_rules are provided, add the split component phonemes to vocabulary
+        # Note: Compound vowels are preserved in the vocabulary - we add components alongside them
+        # This allows the model to learn both compound vowels AND their components
+        if split_rules:
+            for compound, components in split_rules.items():
+                for comp in components:
+                    phonemes.add(comp)
+            print(f"Added {sum(len(c) for c in split_rules.values())} component phonemes from split rules")
+        
         for p in ignored_phonemes:
             if p in phonemes:
                 phonemes.remove(p)
@@ -71,7 +85,7 @@ class ForcedAlignmentBinarizer:
         return vocab
 
     def process(self):
-        vocab = self.get_vocab(self.data_folder, self.ignored_phonemes)
+        vocab = self.get_vocab(self.data_folder, self.ignored_phonemes, self.split_rules)
         with open(self.data_folder / "binary" / "vocab.yaml", "w") as file:
             yaml.dump(vocab, file)
 
@@ -418,11 +432,13 @@ def binarize(config_path: str, split_diphthong: bool, split_dict: str):
         split_rules = load_split_rules(split_dict)
         global_config["split_rules"] = split_rules
         print(f"Diphthong splitting enabled with {len(split_rules)} rules from {split_dict}")
+    else:
+        split_rules = None
     
     with open(pathlib.Path("data/binary/") / "global_config.yaml", "w") as file:
         yaml.dump(global_config, file)
 
-    ForcedAlignmentBinarizer(**config).process()
+    ForcedAlignmentBinarizer(**config, split_rules=split_rules).process()
 
 
 if __name__ == "__main__":

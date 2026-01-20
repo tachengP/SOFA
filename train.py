@@ -127,6 +127,10 @@ def main(config_path: str, data_folder: str, pretrained_model_path, resume, spli
         config["loss_config"],
         config["data_augmentation_size"] > 0,
     )
+    
+    # If split_diphthong is enabled, set split_rules for validation visualization
+    if split_diphthong and config.get("split_rules"):
+        lightning_alignment_model.set_split_rules(config["split_rules"])
 
     # trainer
     trainer = pl.Trainer(
