@@ -345,3 +345,79 @@ def apply_combine_to_annotations(
     reverse_mapping = build_reverse_mapping(split_rules)
     combinable = find_combinable_sequences(ph_seq, reverse_mapping)
     return apply_combine_to_sequence(ph_seq, ph_intervals, combinable)
+
+
+def build_reverse_mapping_with_ids(
+    split_rules: Dict[str, List[str]],
+    vocab: Dict
+) -> Dict[Tuple[int, ...], int]:
+    """
+    Build a reverse mapping from component vowel ID sequences to compound vowel IDs.
+    
+    This is used during binarization to detect split component sequences and 
+    associate them with their compound vowel.
+    
+    Args:
+        split_rules: Dictionary mapping compound vowels to component lists
+        vocab: The vocabulary dictionary (phoneme <-> ID mapping)
+        
+    Returns:
+        Dictionary mapping component ID sequence (as tuple) to compound vowel ID
+    """
+    reverse_mapping = {}
+    for compound, components in split_rules.items():
+        # Check if compound and all components exist in vocab
+        if compound not in vocab:
+            continue
+        
+        all_exist = True
+        component_ids = []
+        for comp in components:
+            if comp not in vocab:
+                all_exist = False
+                break
+            component_ids.append(vocab[comp])
+        
+        if all_exist:
+            reverse_mapping[tuple(component_ids)] = vocab[compound]
+    
+    return reverse_mapping
+
+
+def find_component_sequences_in_ids(
+    ph_seq_ids: List[int],
+    reverse_id_mapping: Dict[Tuple[int, ...], int]
+) -> List[Tuple[int, int, int]]:
+    """
+    Find sequences of phoneme IDs that form component sequences of compound vowels.
+    
+    Args:
+        ph_seq_ids: List of phoneme IDs
+        reverse_id_mapping: Mapping from component ID sequences to compound vowel IDs
+        
+    Returns:
+        List of (start_idx, end_idx, compound_vowel_id) tuples
+    """
+    matches = []
+    
+    # Check for sequences of length 2, 3, 4 (typical diphthong/triphthong lengths)
+    for seq_len in [4, 3, 2]:
+        i = 0
+        while i <= len(ph_seq_ids) - seq_len:
+            seq = tuple(ph_seq_ids[i:i+seq_len])
+            if seq in reverse_id_mapping:
+                matches.append((i, i + seq_len, reverse_id_mapping[seq]))
+                i += seq_len  # Skip the matched sequence
+            else:
+                i += 1
+    
+    # Remove overlapping matches (keep longer matches)
+    matches.sort(key=lambda x: (x[0], -(x[1] - x[0])))
+    non_overlapping = []
+    last_end = -1
+    for start, end, compound_id in matches:
+        if start >= last_end:
+            non_overlapping.append((start, end, compound_id))
+            last_end = end
+    
+    return non_overlapping

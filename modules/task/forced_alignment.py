@@ -136,6 +136,7 @@ class LitForcedAlignmentTask(pl.LightningModule):
             "ctc_GHM_loss",
             "consistency_loss",
             "pseudo_label_loss",
+            "compound_vowel_loss",
             "total_loss",
         ]
         self.losses_weights = torch.tensor(loss_config["losses"]["weights"])
@@ -180,6 +181,7 @@ class LitForcedAlignmentTask(pl.LightningModule):
         )
         self.MSE_loss_fn = nn.MSELoss()
         self.CTC_GHM_loss_fn = CTCGHMLoss(alpha=1 - 1e-3)
+        self.KL_loss_fn = nn.KLDivLoss(reduction='batchmean')
 
         # get_melspec
         self.get_melspec = None
@@ -764,6 +766,65 @@ class LitForcedAlignmentTask(pl.LightningModule):
 
         return pseudo_label_loss
 
+    def _get_compound_vowel_loss(
+        self,
+        ph_frame_logits,  # (B, T, vocab_size)
+        ph_frame_gt,  # (B, T) - component phoneme IDs
+        ph_frame_compound_gt,  # (B, T) - compound vowel IDs (0 where no compound)
+        input_feature_lengths,  # (B)
+    ):
+        """
+        Compute compound vowel association loss.
+        
+        This loss encourages the model to predict high probability for the compound vowel
+        when it already predicts high probability for its component phonemes. 
+        Specifically, for frames where component phonemes are labeled AND a compound vowel 
+        association exists, we encourage the compound vowel logit to be similar to the 
+        average of its component logits.
+        
+        Good trend: This loss should decrease during training, indicating that the model
+        learns to associate component phoneme features with compound vowel features.
+        A well-trained model should have this loss converge to a low stable value.
+        """
+        B, T, vocab_size = ph_frame_logits.shape
+        
+        # Create mask for frames where compound vowel association exists
+        compound_mask = (ph_frame_compound_gt > 0).float()  # (B, T)
+        
+        # Also mask by input feature lengths
+        length_mask = torch.arange(T, device=self.device).unsqueeze(0) < input_feature_lengths.unsqueeze(1)
+        compound_mask = compound_mask * length_mask.float()
+        
+        if compound_mask.sum() == 0:
+            return torch.tensor(0.0).to(self.device)
+        
+        # Get probability distributions
+        ph_frame_prob = torch.nn.functional.softmax(ph_frame_logits.float(), dim=-1)  # (B, T, vocab_size)
+        
+        # For each frame with compound vowel association:
+        # - The target is to have high probability for the compound vowel
+        # - We use the ground truth compound vowel ID from ph_frame_compound_gt
+        
+        # Gather the compound vowel probabilities
+        compound_ids = ph_frame_compound_gt.long()  # (B, T)
+        compound_probs = torch.gather(ph_frame_prob, dim=2, index=compound_ids.unsqueeze(-1)).squeeze(-1)  # (B, T)
+        
+        # We want to maximize the probability of compound vowels in frames where components are
+        # This is equivalent to minimizing -log(prob), i.e., cross entropy
+        # But we use soft target: encourage compound prob to be at least as high as component prob
+        component_ids = ph_frame_gt.long()  # (B, T)
+        component_probs = torch.gather(ph_frame_prob, dim=2, index=component_ids.unsqueeze(-1)).squeeze(-1)  # (B, T)
+        
+        # Loss: encourage compound_prob >= component_prob
+        # Using a margin loss: max(0, component_prob - compound_prob + margin)
+        margin = 0.0
+        loss_per_frame = torch.nn.functional.relu(component_probs - compound_probs + margin)
+        
+        # Apply mask and compute mean
+        loss = (loss_per_frame * compound_mask).sum() / (compound_mask.sum() + 1e-6)
+        
+        return loss
+
     def _get_loss(
         self,
         ph_frame_logits,  # (B, T, vocab_size)
@@ -776,6 +837,7 @@ class LitForcedAlignmentTask(pl.LightningModule):
         ph_mask,  # (B vocab_size)
         input_feature_lengths,  # (B)
         label_type,  # (B)
+        ph_frame_compound_gt=None,  # (B, T) - compound vowel associations
         valid=False,
     ):
         full_label_idx = label_type >= 2
@@ -829,6 +891,17 @@ class LitForcedAlignmentTask(pl.LightningModule):
         else:
             consistency_loss = ZERO
             pseudo_label_loss = ZERO
+        
+        # Compound vowel association loss
+        if ph_frame_compound_gt is not None and (full_label_idx).any():
+            compound_vowel_loss = self._get_compound_vowel_loss(
+                ph_frame_logits[full_label_idx, :, :],
+                ph_frame_gt[full_label_idx, :],
+                ph_frame_compound_gt[full_label_idx, :],
+                input_feature_lengths[full_label_idx],
+            )
+        else:
+            compound_vowel_loss = ZERO
 
         losses = [
             ph_frame_GHM_loss,
@@ -838,6 +911,7 @@ class LitForcedAlignmentTask(pl.LightningModule):
             ctc_GHM_loss,
             consistency_loss,
             pseudo_label_loss,
+            compound_vowel_loss,
         ]
 
         return losses
@@ -861,6 +935,7 @@ class LitForcedAlignmentTask(pl.LightningModule):
                 ph_frame,  # (B, T)
                 ph_mask,  # (B vocab_size)
                 label_type,  # (B)
+                ph_frame_compound,  # (B, T) - compound vowel associations
             ) = batch
 
             (
@@ -880,6 +955,7 @@ class LitForcedAlignmentTask(pl.LightningModule):
                 ph_mask,
                 input_feature_lengths,
                 label_type,
+                ph_frame_compound_gt=ph_frame_compound,
                 valid=False,
             )
 
@@ -919,6 +995,7 @@ class LitForcedAlignmentTask(pl.LightningModule):
             ph_frame,  # (B, T)
             ph_mask,  # (B vocab_size)
             label_type,  # (B)
+            ph_frame_compound,  # (B, T) - compound vowel associations
         ) = batch
 
         ph_seq_g2p = ["SP"]
@@ -985,6 +1062,7 @@ class LitForcedAlignmentTask(pl.LightningModule):
             ph_mask,
             input_feature_lengths,
             label_type,
+            ph_frame_compound_gt=ph_frame_compound,
             valid=True,
         )
 
