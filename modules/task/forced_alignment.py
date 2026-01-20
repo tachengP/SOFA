@@ -19,6 +19,7 @@ from modules.loss.GHMLoss import CTCGHMLoss, GHMLoss, MultiLabelGHMLoss
 from modules.utils.get_melspec import MelSpecExtractor
 from modules.utils.load_wav import load_wav
 from modules.utils.plot import plot_for_valid
+from modules.utils.diphthong_split import apply_split_to_annotations
 
 
 @numba.jit
@@ -192,6 +193,9 @@ class LitForcedAlignmentTask(pl.LightningModule):
         self.diphthong_split_mode = None
         self.diphthong_mapping = None
         self.diphthong_split_rate = None
+        
+        # Split rules for validation visualization
+        self.split_rules = None
 
     def load_pretrained(self, pretrained_model):
         self.backbone = pretrained_model.backbone
@@ -488,6 +492,15 @@ class LitForcedAlignmentTask(pl.LightningModule):
         self.diphthong_split_mode = mode
         self.diphthong_mapping = mapping
         self.diphthong_split_rate = rate
+
+    def set_split_rules(self, split_rules):
+        """
+        Set split rules for validation visualization.
+        
+        Args:
+            split_rules: Dictionary mapping compound vowels to their component vowels
+        """
+        self.split_rules = split_rules
 
     def on_predict_start(self):
         if self.get_melspec is None:
@@ -905,7 +918,9 @@ class LitForcedAlignmentTask(pl.LightningModule):
                 continue
             ph_seq_g2p.append(self.vocab[ph])
             ph_seq_g2p.append("SP")
-        _, _, _, _, _, ctc, fig = self._infer_once(
+        
+        # Run inference for original (compound vowel) version
+        ph_seq_pred, ph_intervals_pred, _, _, _, ctc, fig = self._infer_once(
             input_feature,
             None,
             ph_seq_g2p,
@@ -920,6 +935,26 @@ class LitForcedAlignmentTask(pl.LightningModule):
         self.logger.experiment.add_figure(
             f"valid/plot_{batch_idx}", fig, self.global_step
         )
+        
+        # If split_rules are available, also show the split version
+        if self.split_rules is not None and len(ph_seq_pred) > 0:
+            # Convert intervals to list of tuples for apply_split_to_annotations
+            intervals_as_tuples = [(float(s), float(e)) for s, e in ph_intervals_pred]
+            
+            # Apply split rules to get split version
+            split_ph_seq, split_intervals = apply_split_to_annotations(
+                list(ph_seq_pred),
+                intervals_as_tuples,
+                self.split_rules,
+                split_mode="all"
+            )
+            
+            # Only log if any splits were applied (check if sequences differ)
+            if len(split_ph_seq) != len(ph_seq_pred):
+                split_text = " ".join(f"{ph}[{s:.3f}-{e:.3f}]" for ph, (s, e) in zip(split_ph_seq, split_intervals))
+                self.logger.experiment.add_text(
+                    f"valid/split_align_{batch_idx}", split_text, self.global_step
+                )
 
         (
             ph_frame_logits,  # (B, T, vocab_size)

@@ -60,17 +60,13 @@ class ForcedAlignmentBinarizer:
 
         phonemes = set(phonemes)
         
-        # If split_rules are provided, add component vowels to vocabulary
-        # and remove compound vowels that will be split
+        # If split_rules are provided, also add the split component phonemes to vocabulary
+        # This allows the model to learn both compound vowels AND their components
         if split_rules:
             for compound, components in split_rules.items():
-                # Add all component vowels to the vocabulary
                 for comp in components:
                     phonemes.add(comp)
-                # Remove compound vowel from vocabulary since it will be split
-                if compound in phonemes:
-                    phonemes.remove(compound)
-            print(f"Applied split rules: removed {len(split_rules)} compound vowels, added component vowels")
+            print(f"Added {sum(len(c) for c in split_rules.values())} component phonemes from split rules")
         
         for p in ignored_phonemes:
             if p in phonemes:
@@ -86,62 +82,6 @@ class ForcedAlignmentBinarizer:
         print(f"vocab_size is {len(phonemes)}")
 
         return vocab
-
-    def _apply_split_to_row(self, row):
-        """
-        Apply split rules to a single row's ph_seq and ph_dur.
-        
-        This method transforms compound vowels into their component vowels
-        with duration evenly distributed among components.
-        
-        Args:
-            row: A pandas Series containing 'ph_seq' and optionally 'ph_dur' columns
-            
-        Returns:
-            The modified row with split phonemes
-        """
-        # Skip rows where ph_seq is not a string (e.g., NaN values from no_label data
-        # or rows that failed to load properly)
-        if not isinstance(row.get("ph_seq"), str):
-            return row
-        
-        ph_seq_str = row["ph_seq"].split(" ")
-        ph_dur_str = row.get("ph_dur", "").split(" ") if isinstance(row.get("ph_dur"), str) else []
-        
-        # Check if we have duration info (weak_label data may not have ph_dur)
-        has_dur = len(ph_dur_str) == len(ph_seq_str)
-        
-        new_ph_seq = []
-        new_ph_dur = []
-        
-        for idx, ph in enumerate(ph_seq_str):
-            if ph in self.split_rules:
-                # This is a compound vowel that should be split
-                components = self.split_rules[ph]
-                new_ph_seq.extend(components)
-                
-                if has_dur:
-                    # Evenly distribute the duration among components
-                    try:
-                        dur = float(ph_dur_str[idx])
-                    except ValueError as e:
-                        wav_path = row.get("wav_path", "unknown")
-                        raise ValueError(
-                            f"Invalid duration value '{ph_dur_str[idx]}' for phoneme '{ph}' "
-                            f"at index {idx} in file '{wav_path}': {e}"
-                        )
-                    component_dur = dur / len(components)
-                    new_ph_dur.extend([str(component_dur)] * len(components))
-            else:
-                new_ph_seq.append(ph)
-                if has_dur:
-                    new_ph_dur.append(ph_dur_str[idx])
-        
-        row["ph_seq"] = " ".join(new_ph_seq)
-        if has_dur:
-            row["ph_dur"] = " ".join(new_ph_dur)
-        
-        return row
 
     def process(self):
         vocab = self.get_vocab(self.data_folder, self.ignored_phonemes, self.split_rules)
@@ -436,11 +376,6 @@ class ForcedAlignmentBinarizer:
 
         meta_data_df.reset_index(drop=True, inplace=True)
 
-        # Apply split rules to transform compound vowels into component vowels
-        if self.split_rules:
-            print(f"Applying split rules to transform compound vowels...")
-            meta_data_df = meta_data_df.apply(self._apply_split_to_row, axis=1)
-
         meta_data_df["ph_seq"] = meta_data_df["ph_seq"].apply(
             lambda x: ([vocab[i] for i in x.split(" ")] if isinstance(x, str) else [])
         )
@@ -469,10 +404,8 @@ class ForcedAlignmentBinarizer:
     is_flag=True,
     default=False,
     show_default=True,
-    help="Enable diphthong splitting mode. Transforms compound vowels (e.g., 'ai') "
-         "into their component vowels (e.g., 'a i') in training data, with duration "
-         "evenly distributed among components. The model will learn to predict "
-         "component vowel boundaries instead of compound vowel boundaries.",
+    help="Enable diphthong splitting mode. Links compound vowels with their split "
+         "component vowels for mutual learning during training.",
 )
 @click.option(
     "--split_dict",
@@ -492,13 +425,14 @@ def binarize(config_path: str, split_diphthong: bool, split_dict: str):
         "split_diphthong": split_diphthong,
     }
     
-    split_rules = None
     # If split_diphthong is enabled, load and save the split rules
     if split_diphthong:
         from modules.utils.diphthong_split import load_split_rules
         split_rules = load_split_rules(split_dict)
         global_config["split_rules"] = split_rules
         print(f"Diphthong splitting enabled with {len(split_rules)} rules from {split_dict}")
+    else:
+        split_rules = None
     
     with open(pathlib.Path("data/binary/") / "global_config.yaml", "w") as file:
         yaml.dump(global_config, file)

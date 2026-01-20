@@ -1,6 +1,5 @@
 import os
 import pathlib
-import warnings
 
 import click
 import lightning as pl
@@ -50,8 +49,8 @@ from modules.task.forced_alignment import LitForcedAlignmentTask
     is_flag=True,
     default=False,
     show_default=True,
-    help="[Deprecated] This flag is now handled during binarization. "
-         "Use --split_diphthong when running binarize.py instead.",
+    help="Enable diphthong splitting mode. Links compound vowels with their split "
+         "component vowels for mutual learning during training.",
 )
 def main(config_path: str, data_folder: str, pretrained_model_path, resume, split_diphthong: bool):
     data_folder = pathlib.Path(data_folder)
@@ -70,17 +69,18 @@ def main(config_path: str, data_folder: str, pretrained_model_path, resume, spli
         config_global = yaml.safe_load(f)
     config.update(config_global)
     
-    # Check if split_diphthong was used during binarization
-    if config.get("split_diphthong", False):
-        print("Note: Data was binarized with diphthong splitting enabled. "
-              "Compound vowels have been transformed into component vowels in training data.")
-    elif split_diphthong:
-        warnings.warn(
-            "--split_diphthong flag in train.py is deprecated. "
-            "Please re-run binarize.py with --split_diphthong to enable this feature.",
-            DeprecationWarning,
-            stacklevel=2
-        )
+    # Handle split_diphthong mode
+    # The flag from CLI takes precedence, but also check if binarize was run with it
+    if split_diphthong or config.get("split_diphthong", False):
+        split_diphthong = True
+        split_rules = config.get("split_rules", {})
+        if split_rules:
+            from modules.utils.diphthong_split import build_diphthong_mapping
+            diphthong_mapping = build_diphthong_mapping(vocab, split_rules)
+            config["diphthong_mapping"] = diphthong_mapping
+            print(f"Diphthong splitting enabled with {len(diphthong_mapping)} applicable mappings")
+        else:
+            print("Warning: split_diphthong enabled but no split rules found in global_config")
 
     torch.set_float32_matmul_precision(config["float32_matmul_precision"])
     pl.seed_everything(config["random_seed"], workers=True)
@@ -127,6 +127,10 @@ def main(config_path: str, data_folder: str, pretrained_model_path, resume, spli
         config["loss_config"],
         config["data_augmentation_size"] > 0,
     )
+    
+    # If split_diphthong is enabled, set split_rules for validation visualization
+    if split_diphthong and config.get("split_rules"):
+        lightning_alignment_model.set_split_rules(config["split_rules"])
 
     # trainer
     trainer = pl.Trainer(

@@ -1,18 +1,29 @@
-# Compound vowel split rules
-# Format: compound_vowel	component1 component2 [component3 ...]
+# Compound vowel split rules for Chinese
+# Format: compound_vowel<TAB>component1 component2 [component3 ...]
 # Each line defines how a compound vowel should be split into simpler vowels
 # The model will learn to find the split points based on training data
-ai	a i
-ao	a o
-ei	e i
-ou	o u
-ia	i a
-ie	i e
-iu	i u
-ua	u a
-uo	u o
-ui	u i
-iao	i a o
-iou	i o u
-uai	u a i
-uei	u e i
+zh/ai	zh/a# zh/#i
+zh/an	zh/a# zh/#n
+zh/ang	zh/A# zh/#N
+zh/ao	zh/A# zh/#U
+zh/ei	zh/e# zh/#i
+zh/en	zh/@# zh/#n
+zh/eng	zh/7# zh/#N
+zh/er	zh/@# zh/#`
+zh/ian	zh/iE# zh/#n
+zh/iang	zh/iA# zh/#N
+zh/iao	zh/iA# zh/#U
+zh/in	zh/i# zh/#n
+zh/ing	zh/i# zh/#N
+zh/iong	zh/iU# zh/#N
+zh/iu	zh/io# zh/#U
+zh/ong	zh/U# zh/#N
+zh/ou	zh/o# zh/#U
+zh/uai	zh/ua# zh/#i
+zh/uan	zh/ua# zh/#n
+zh/uang	zh/uA# zh/#N
+zh/ueng	zh/u@# zh/#N
+zh/ui	zh/ue# zh/#i
+zh/un	zh/u@# zh/#n
+zh/van	zh/y9# zh/#n
+zh/vn	zh/y# zh/#n
