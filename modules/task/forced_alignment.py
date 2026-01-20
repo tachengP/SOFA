@@ -938,19 +938,22 @@ class LitForcedAlignmentTask(pl.LightningModule):
         
         # If split_rules are available, also show the split version
         if self.split_rules is not None and len(ph_seq_pred) > 0:
-            # Convert intervals to list of tuples for apply_split_to_annotations
-            intervals_as_tuples = [(float(s), float(e)) for s, e in ph_intervals_pred]
+            # Check if any phoneme can be split
+            has_splittable = any(ph in self.split_rules for ph in ph_seq_pred)
             
-            # Apply split rules to get split version
-            split_ph_seq, split_intervals = apply_split_to_annotations(
-                list(ph_seq_pred),
-                intervals_as_tuples,
-                self.split_rules,
-                split_mode="all"
-            )
-            
-            # Only log if any splits were applied (check if sequences differ)
-            if len(split_ph_seq) != len(ph_seq_pred):
+            if has_splittable:
+                # Convert intervals to list of tuples for apply_split_to_annotations
+                intervals_as_tuples = [(float(s), float(e)) for s, e in ph_intervals_pred]
+                
+                # Apply split rules to get split version
+                split_ph_seq, split_intervals = apply_split_to_annotations(
+                    list(ph_seq_pred),
+                    intervals_as_tuples,
+                    self.split_rules,
+                    split_mode="all"
+                )
+                
+                # Log the split version
                 split_text = " ".join(f"{ph}[{s:.3f}-{e:.3f}]" for ph, (s, e) in zip(split_ph_seq, split_intervals))
                 self.logger.experiment.add_text(
                     f"valid/split_align_{batch_idx}", split_text, self.global_step

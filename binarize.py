@@ -60,7 +60,8 @@ class ForcedAlignmentBinarizer:
 
         phonemes = set(phonemes)
         
-        # If split_rules are provided, also add the split component phonemes to vocabulary
+        # If split_rules are provided, add the split component phonemes to vocabulary
+        # Note: Compound vowels are preserved in the vocabulary - we add components alongside them
         # This allows the model to learn both compound vowels AND their components
         if split_rules:
             for compound, components in split_rules.items():
